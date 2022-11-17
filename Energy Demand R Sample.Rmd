@@ -1,0 +1,201 @@
+---
+title: Quantitative Analysis - Electric Vehicle Impacts on Residential Electricity
+  Demand
+output:
+  pdf_document: 
+    toc: yes
+    fig_width: 10
+    fig_height: 8
+    number_sections: yes
+  html_notebook: default
+---
+
+```{r import libraries}
+library(dplyr)
+library(ggplot2)
+library(TSstudio)
+library(tsibble)
+library(plotly)
+library(ggpubr)
+library(gtools)
+library(lubridate)
+library(rstatix)
+library("readxl")
+library(data.table)
+
+```
+
+```{r rename/transform datasets}
+## import 
+
+Copy_of_Residential_Profiles <- read_excel("~/Documents/NREL Interview Materials/NREL Research/Datasets/Copy of Residential-Profiles.xlsx")
+View(Copy_of_Residential_Profiles)
+
+Copy_of_PEV_Profiles <- read_excel("~/Documents/NREL Interview Materials/NREL Research/Datasets/Copy of PEV-Profiles-L1.xlsx")
+View(Copy_of_Residential_Profiles)
+
+
+## master data set for residential electricity demand
+ResUse <- Copy_of_Residential_Profiles %>% group_by(Time, Time = as.POSIXct(Time, format = "%Y-%m-%dT%H:%M"))
+
+## master data set for EV charging electricity usage
+EVuse <- Copy_of_PEV_Profiles %>% group_by(Time, Time = as.POSIXct(Time, format = "%Y-%m-%dT%H:%M"))
+
+## data sets with average watt demand/usage for every 10 minutes measured
+AvgResUse <- data.frame(Time = ResUse$Time, 
+                        Watts = rowMeans(ResUse[c(-1)]))
+
+AvgEvUse <- data.frame(Time = EVuse$Time, 
+                       Watts = rowMeans(EVuse[c(-1)]))
+
+## temperature data set being used later on in analysis
+Temp <- read_excel("~/Documents/NREL Interview Materials/NREL Research/Datasets/Kansas City Average Daily Weather 2010.xlsx")
+
+## other various data sets
+
+CombinedWatts <- data.frame(Time = AvgEvUse$Time, ResWatts = AvgResUse$Watts, EvWatts = AvgEvUse$Watts)
+
+WattTS <- ts(data = CombinedWatts[c("ResWatts", "EvWatts")],
+   frequency = 365,
+   start = c(2010, 1),
+   end = c(2011, 1))
+
+
+## combined data set with daily temperature data, setting EV and residential data to daily averages
+
+newdate <- format(CombinedWatts$Time, format="%Y:%m:%d")
+
+df <- data.frame(newdate, CombinedWatts$ResWatts, CombinedWatts$EvWatts) 
+
+Watt_lm <- setDT(df)[, lapply(.SD, mean, na.rm=TRUE), by=newdate]
+
+Watt_lm <- cbind(Watt_lm, Temp[c(-1)])
+
+Watt_lm <- rename(Watt_lm, ResWatts = "CombinedWatts.ResWatts", EvWatts = "CombinedWatts.EvWatts", Day = newdate)
+
+Watt_lm$Day <- ymd(Watt_lm$Day)
+
+```
+
+```{r view datasets/relationships}
+
+# initial plot showing average residential electricity demand
+AvgResPlot <- ggplot(AvgResUse, aes(Time, Watts))
+AvgResPlot + geom_line() + geom_smooth(method = NULL, se = 99)
+
+# initial plot showing average EV charging without geom_line() - not useful here
+AvgEvPlot <- ggplot(AvgEvUse, aes(Time, Watts))
+AvgEvPlot + geom_smooth(method = NULL, se = 99, color = "red")
+```
+
+
+
+```{r final output for visualization}
+
+AvgResPlot + geom_line() + 
+  geom_smooth(method = NULL, se = 99, aes(color = "Residential")) +
+  geom_smooth(data = AvgEvUse, method = NULL, se = 99, aes(color = "Electric Vehicle")) +
+  ggtitle("Average Electricity Demand in Watts") + xlab("Time") + 
+  ylab("Watt Hours") + 
+  labs(subtitle = "Measured Every 10 Minutes (99% CI)") + 
+  scale_colour_manual(name="legend", values=c("red", "blue"))
+```
+
+```{r in-depth side by side view of data}
+
+ts_plot(WattTS,
+        title = "Residential Electricity Demand vs Residential EV Electricity Use",
+        Ytitle = "Watts",
+        Xtitle = "Time (2010)", 
+        slider = TRUE)
+```
+
+
+```{r running correlation between residential electricity demand vs EV charging usage}
+
+WattTSnew <- as_tsibble(CombinedWatts, index = Time)
+
+plot(running(WattTSnew$ResWatts, WattTSnew$EvWatts, fun = cor, width=3500), pch = '.', main="Running Correlation of EV Charging vs Residential Electricity Demand",
+xlab="Running Observations",
+ylab="Correlation",
+sub="1 month ≈ 4,333 Observations")
+
+```
+
+```{r analysis of daily averages opposed to every 10 minutes through the time series}
+
+DailyWattPlot <- ggplot(Watt_lm, aes(Day, ResWatts))
+DailyWattPlot + geom_line() + 
+  geom_smooth(method = NULL, se = 99, aes(color = "Residential")) +
+  geom_smooth(data = Watt_lm, method = NULL, se = 99, aes(x = Day, y = EvWatts, color = "Electric Vehicle")) +
+  ggtitle("Average Electricity Demand in Watts") + xlab("Time") + 
+  ylab("Watt Hours") + 
+  labs(subtitle = "Daily Average (99% CI)") + 
+  scale_colour_manual(name="legend", values=c("red", "blue"))
+
+## this code is added so two graphs can be compared side-by-side
+AvgResPlot + geom_line() + 
+  geom_smooth(method = NULL, se = 99, aes(color = "Residential")) +
+  geom_smooth(data = AvgEvUse, method = NULL, se = 99, aes(color = "Electric Vehicle")) +
+  ggtitle("Average Electricity Demand in Watts") + xlab("Time") + 
+  ylab("Watt Hours") + 
+  labs(subtitle = "Measured Every 10 Minutes (99% CI)") + 
+  scale_colour_manual(name="legend", values=c("red", "blue"))
+```
+
+
+```{r closer look at key differences - correlation}
+
+## daily average
+plot(Watt_lm$ResWatts, Watt_lm$EvWatts, main = "Correlation of Daily Average Electricity (Watt) Usage",
+     xlab = "Residential Electricity Usage", ylab = "EV Charging Usage",
+     pch = 1, frame = FALSE)
+abline(lm(Watt_lm$EvWatts ~ Watt_lm$ResWatts, data = Watt_lm), col = "blue")
+
+## measured every 10 minutes
+plot(CombinedWatts$ResWatts, CombinedWatts$EvWatts, main = "Correlation of Average Electricity (Watt) Usage, Measured Every 10 Minutes",
+     xlab = "Residential Electricity Usage", ylab = "EV Charging Usage",
+     pch = 1, frame = FALSE)
+abline(lm(CombinedWatts$EvWatts ~ CombinedWatts$ResWatts, data = CombinedWatts), col = "blue")
+```
+
+```{r supporting statistical outputs for daily average data - identifying relevance/usefulness of temperature data}
+
+## scatterplot matrix
+pairs(~ ResWatts + EvWatts + Temp, data = Watt_lm)
+
+##Shows all paired p-values
+cor_p <- cor_pmat(Watt_lm[, -1])
+cor_p
+
+##Shows all correlations
+cor_test <- cor_mat(Watt_lm[, -1])
+cor_test
+
+```
+
+```{r model building - daily vs 10 minute intervals, using temp vs. residential versus EV}
+
+## Daily average full model with ResUse response variable
+Model1 <- lm(ResWatts ~ EvWatts + Temp, data = Watt_lm)
+summary(Model1)
+
+## Daily average full model with EvUse response variable
+Model2 <- lm(EvWatts ~ ResWatts + Temp, data = Watt_lm)
+summary(Model2)
+
+## Daily averages and Temperature
+Model3 <- lm(ResWatts ~ Temp, data = Watt_lm)
+summary(Model3)
+
+Model4 <- lm(ResWatts ~ EvWatts, data = Watt_lm)
+summary(Model4)
+
+Model5 <- lm(EvWatts ~ Temp, data = Watt_lm)
+summary(Model5)
+
+## Every 10 minutes with Residential Use as response variable. Shows much stronger correlation
+Model6 <- lm(ResWatts ~ EvWatts, data = CombinedWatts)
+summary(Model6)
+
+```
